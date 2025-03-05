@@ -156,9 +156,9 @@ class DriverPackager(object):
             manifest_xml_tree = etree.parse(manifest_xml_filepath)
             manifest_xml_root_element = manifest_xml_tree.getroot()
 
-            # PARSE XML TO CREATE THE PACKAGE.
             try:
-                self.ParseXml(manifest_xml_root_element, self.source_directory_path)
+                # PARSE XML TO CREATE THE PACKAGE.
+                self.ParseXmlToCreatePackage(manifest_xml_root_element, self.source_directory_path)
                 # If no exception occurs, then creation should be successful.
                 SUCCESS_RETURN_CODE: int = 0
                 return SUCCESS_RETURN_CODE
@@ -211,7 +211,7 @@ class DriverPackager(object):
     ## Cleans up any temporary Lua driver file in the specified directory.
     ## If a temporary file exists, it will be copied to a permanent location.
     ## \param[in]   root_directory_path - Root directory in which to search for a temporary Lua driver file.
-    def CleanupTmpFile(self, root_directory_path: str):
+    def CleanupTemporaryLuaFile(self, root_directory_path: str):
         # CHECK IF EXECUTION IN A LUA COMMAND WINDOW WAS ALLOWED.
         if self.allow_execute:
             try:
@@ -228,22 +228,23 @@ class DriverPackager(object):
             except Exception as exception:
                 self.Log("Unable to remove driver.lua.tmp file or file does not exist")
 
-    def ParseXml(self, xml_root_element, root_directory_path: str):
-        c4zDriverXmlFound = False
-        c4zScriptFile = ''
-        c4zDirs = []
-        c4zFiles = []
-
+    ## Parses XML to create a driver package for the specified directory.
+    ## \param[in]   xml_root_element - The root XML element for the driver manifest.
+    ## \param[in]   root_directory_path - Path of the root directory for the package to create.
+    ## \throws  Exception - Thrown if an error occurs.            
+    def ParseXmlToCreatePackage(self, xml_root_element, root_directory_path: str):
         # VALIDATE THE ROOT XML ELEMENT.
         is_for_driver_element: bool = (xml_root_element.tag == 'Driver')
         if not is_for_driver_element:
             raise Exception("DriverPackager: Invalid XML: Missing tag 'Driver'")
 
+        # A driver type is required.
         driver_type = xml_root_element.attrib.get('type')
         driver_type_specified: bool = driver_type is not None
         if not driver_type_specified:
             raise Exception("DriverPackager: Invalid XML: Missing tag 'type'")
 
+        # A driver name is required.
         driver_name = xml_root_element.attrib.get('name')
         driver_name_specified: bool = driver_name is not None
         if driver_name_specified:
@@ -261,8 +262,8 @@ class DriverPackager(object):
             self.bytes_io = None
         c4z.setC4i(c4i)
 
-        # FORM THE C4Z DRIVER FILENAME.
-        c4z_filename: str = '.'.join((driverName, driverType))
+        # FORM THE C4Z NAME.
+        c4z_name: str = '.'.join((driver_name, driver_type))
 
         # EXECUTE ANY PREPACKAGING COMMANDS.
         prepackage_command_xml_elements = xml_root_element.find('PrepackageCommands')
@@ -287,7 +288,7 @@ class DriverPackager(object):
                 if prepackage_command_succeeded:
                     raise Exception("Failed to execute prepackage command.")
 
-        # VERIFY THE XML HAS ITEMS.
+        # VERIFY THE MANIFEST XML HAS ITEMS.
         item_xml_elements = xml_root_element.find('Items')
         items_exist: bool = item_xml_elements is not None
         if items_exist:
@@ -309,8 +310,15 @@ class DriverPackager(object):
                 # ENABLE DEVELOPMENT DRIVER FEATURES.
                 lua_driver_file.write("\ngIsDevelopmentVersionOfDriver = true\n")
 
-        # PROCESS EACH ITEM.        
-        for item_xml_element in item_xml_elements :
+        # PROCESS EACH ITEM FROM THE DRIVER MANIFEST.
+        # A c4z driver XML file is required to be found.        
+        c4z_driver_xml_found: bool = False
+        # A c4z script file for encryption may also need to be tracked.
+        c4z_script_file: str = ''
+        # Specific directories and files for the c4z driver need to be tracked.
+        c4z_directories = []
+        c4z_files = []
+        for item_xml_element in item_xml_elements:
             # VERIFY THE ITEM XML IS VALID.
             # It should have the appropriate tag.
             item_xml_element_has_correct_tag: bool = (item_xml_element.tag == 'Item')
@@ -323,14 +331,14 @@ class DriverPackager(object):
             item_type = item_xml_element.attrib.get('type')
             item_type_exists: bool = item_type is not None
             if item_type_exists:
-                self.CleanupTmpFile(root_directory_path)
+                self.CleanupTemporaryLuaFile(root_directory_path)
                 raise Exception("DriverPackager: Invalid XML: Missing tag 'Item' subtag 'type'")
 
             # A name is required.
             item_name = item_xml_element.attrib.get('name')
             item_name_exists: bool = item_name is not None
             if item_name_exists:
-                self.CleanupTmpFile(root_directory_path)
+                self.CleanupTemporaryLuaFile(root_directory_path)
                 raise Exception("DriverPackager: Invalid XML: Missing tag 'Item' subtag 'name'")
 
             # SKIP EXCLUDED ITEMS.
@@ -345,10 +353,10 @@ class DriverPackager(object):
             # PROCESS THE ITEM ACCORDING TO ITS TYPE.
             if item_type == 'dir':
                 # VERIFY THE DIRECTORY ITEM EXISTS WITHIN THE ROOT DIRECTORY.
-                directory_path: str = os.path.join(root_directory_path, item_name)
-                directory_exists: bool = os.path.exists(directory_path)
-                if not directory_exists:
-                    self.CleanupTmpFile(root_directory_path)
+                item_directory_path: str = os.path.join(root_directory_path, item_name)
+                item_directory_exists: bool = os.path.exists(item_directory_path)
+                if not item_directory_exists:
+                    self.CleanupTemporaryLuaFile(root_directory_path)
                     raise Exception(f"DriverPackager: Error, manifest 'dir' Item '{item_name}' does not exist.")
 
                 # CHECK IF THE DIRECTORY SHOULD BE RECURSED INTO.
@@ -356,16 +364,17 @@ class DriverPackager(object):
                     'recurse') == str('true').lower() else False
                 
                 # GET ANY OPTIONAL C4Z DIRECTORY.
-                c4zDir = item_xml_element.attrib.get('c4zDir') if item_xml_element.attrib.get(
+                c4z_directory = item_xml_element.attrib.get('c4zDir') if item_xml_element.attrib.get(
                     'c4zDir') != None else ''
                 
-                # CONFIGURE THE C4Z DIRECTORY ITEM.
-                c4zDirs.append(
-                    {'c4zDir': c4zDir, 'recurse': recurse, 'name': item_name})
+                # TRACK THE C4Z DIRECTORY ITEM.
+                c4z_directories.append(
+                    {'c4zDir': c4z_directory, 'recurse': recurse, 'name': item_name})
 
             elif item_type == 'file':
                 # REMOVE ANY ENCYPTED EXTENSION FROM THE ITEM NAME.
-                if c4zScriptFile:
+                if c4z_script_file:
+                    # Encrypted files will have an additional extension appended to their original names.
                     filename_without_last_extension, file_extension = os.path.splitext(item_name)
                     is_encrypted_file: bool = file_extension == '.encrypted'
                     if is_encrypted_file:
@@ -373,21 +382,21 @@ class DriverPackager(object):
 
                 # VERIFY THE FILE ITEM EXISTS.
                 item_filepath: str = os.path.join(root_directory_path, item_name)
-                item_file_exists: bool =os.path.exists(item_filepath) 
+                item_file_exists: bool = os.path.exists(item_filepath) 
                 if not item_file_exists:
-                    self.CleanupTmpFile(root_directory_path)
+                    self.CleanupTemporaryLuaFile(root_directory_path)
                     raise Exception(f"DriverPackager: Error, manifest 'file' Item '{item_name}' does not exist in {root_directory_path}'.")
 
                 # GET THE SCRIPT SECTION FROM THE DRIVER XML.
                 is_driver_xml_item: bool = (item_name == 'driver.xml')
                 if is_driver_xml_item:
                     # TRACK THAT THE DRIVER XML WAS FOUND.
-                    c4zDriverXmlFound = True
+                    c4z_driver_xml_found = True
 
                     # GET ANY ENCRYPTED SCRIPT FILENAME.
-                    c4zScriptFile = self.GetEncryptFilename(item_filepath)
+                    c4z_script_file = self.GetEncryptFilename(item_filepath)
 
-                    # READ THE DRIVER.XML TO DETERMINE IF 'TEXTFILE' ATTRIBUTE EXISTS.
+                    # READ THE DRIVER.XML TO DETERMINE IF THE 'TEXTFILE' ATTRIBUTE EXISTS.
                     driver_xml_tree = etree.parse(item_filepath)
                     driver_xml_root_element = driver_xml_tree.getroot()
 
@@ -410,7 +419,7 @@ class DriverPackager(object):
                             documentation_file: Optional[str] = None
                             documentation_file_exists_in_xml_element: bool = 'file' in first_documentation_xml_element.attrib
                             if documentation_file_exists_in_xml_element:
-                                docFile = first_documentation_xml_element.attrib['file']
+                                documentation_file = first_documentation_xml_element.attrib['file']
 
                             # BACKUP THE DRIVER XML FILE.
                             # If the 'textfile' attribute exists, create a backup of the driver.xml (driver.xml.bak) because modifications will need to be made.
@@ -422,7 +431,7 @@ class DriverPackager(object):
                             textfile_path: str = os.path.join(root_directory_path, textfile)
                             try:
                                 codecs.open(textfile_path, 'r')
-                            except Exception as ex:
+                            except Exception as exception:
                                 self.Log("Unable to find the file " + "'" + textfile + "'" +
                                          " referenced in the 'textfile' attribute of the '<documentation>' element in your driver.xml")
                             finally:
@@ -432,18 +441,12 @@ class DriverPackager(object):
                                
                             # REMOVE THE DOCUMENTATION ELEMENTS FOR THE DRIVER XML.
                             # They will be recreated later below.
-                            xml_tree = etree.parse(item_filepath)
-                            xml_root_driver = xml_tree.getroot()
-                            documentation = xml_root_driver.findall('./config/documentation')
-                            documentation_exists: bool = documentation is not None
-                            if documentation_exists:
-                                config = xml_root_driver.find('config')
-                                for documentation_element in config.findall('documentation'):
-                                    config.remove(documentation_element)
+                            for documentation_element in documentation_xml_elements:
+                                config.remove(documentation_element)
 
                             # CREATE A NEW DOCUMENTATION ELEMENT WITH THE TEXTFILE CONTENTS.
                             # The contents of the 'textfile' go in the innertext of the '<documentation>' element in the driver.xml.
-                            config_xml_element = xml_tree.find('config')
+                            config_xml_element = driver_xml_tree.find('config')
                             new_documentation_xml_element = etree.SubElement(config_xml_element, 'documentation')
                             new_documentation_xml_element.text = ''.join(textfile_lines)
 
@@ -454,8 +457,8 @@ class DriverPackager(object):
                                 if documentation_file_exists:
                                     new_documentation_xml_element.set('file', documentation_file)
 
-                            # WRITE THE CHANGES TO THE XML DOCUMENT.
-                            xml_tree.write(item_filepath, pretty_print=True)
+                            # WRITE THE CHANGES TO THE ITEM XML DOCUMENT.
+                            driver_xml_tree.write(item_filepath, pretty_print=True)
 
                         else:
                             # Couldn't find the textfile attribute so there is nothing to do.  Carry on...
@@ -468,22 +471,22 @@ class DriverPackager(object):
                     # ENSURE C4I DRIVERS ARE BEING BUILT WITH SQUISHED LUA.
                     building_c4i_driver_without_squish_lua: bool = (c4i and not squishLua)
                     if building_c4i_driver_without_squish_lua:
-                        self.CleanupTmpFile(root_directory_path)
+                        self.CleanupTemporaryLuaFile(root_directory_path)
                         raise Exception(
                             "You are attempting to build a driver of type 'c4i', but 'squishLua' is set to false in the project file/manifest.  This needs to be set to true.")
 
                 # GET ANY OPTIONAL C4Z DIRECTORY.
-                c4zDir = item_xml_element.attrib.get('c4zDir') if item_xml_element.attrib.get(
+                c4z_directory = item_xml_element.attrib.get('c4zDir') if item_xml_element.attrib.get(
                     'c4zDir') != None else ''
                 is_driver_xml_item_for_non_c4i_driver: bool = (item_name == "driver.xml" and not c4i)
                 if is_driver_xml_item_for_non_c4i_driver:
                     pass
                 else:
                     # TRACK THE ITEM AS BEING FOR C4Z FILES.
-                    c4zFiles.append({'c4zDir': c4zDir, 'name': item_name})
+                    c4z_files.append({'c4zDir': c4z_directory, 'name': item_name})
 
         # MAKE SURE THE DRIVER XML WAS FOUND.
-        if not c4zDriverXmlFound:
+        if not c4z_driver_xml_found:
             raise Exception("DriverPackager: Error, manifest 'file' Item 'driver.xml' was not found.")
 
         # UPDATE THE DRIVER XML.
@@ -491,39 +494,41 @@ class DriverPackager(object):
         self.UpdateDriverXml(driver_xml_filepath)
 
         # COMPRESS C4Z DRIVER ITEMS.
-        destination_c4z_filepath: str = os.path.join(self.destination_directory_path, c4zName)
+        destination_c4z_filepath: str = os.path.join(self.destination_directory_path, c4z_name)
         c4z_compression_succeeded: bool = c4z.compressLists(
             destination_c4z_filepath, 
             root_directory_path, 
-            c4zDirs, 
-            c4zFiles, 
-            c4zScriptFile, 
+            c4z_directories, 
+            c4z_files, 
+            c4z_script_file, 
             xmlByteOverride=self.bytes_io.getvalue())
         if not c4z_compression_succeeded:
-            raise Exception(f"DriverPackager: Building {c4zName} failed.")
+            raise Exception(f"DriverPackager: Building {c4z_name} failed.")
 
         # CLEANUP ANY TEMPORARY FILES.
-        self.CleanupTmpFile(root_directory_path)
+        self.CleanupTemporaryLuaFile(root_directory_path)
 
         # BUILD ANY C4I DRIVERS.
         is_c4i_driver: bool = (driver_type == "c4i")
         if is_c4i_driver:
             # REMOVE THE .C4I THAT WAS GENERATED AS IT IS A ZIPPED UP .C4I.
             # It will be replaced with an updated file created later below.
-            os.remove(os.path.join(self.destination_directory_path, c4zName))
+            os.remove(os.path.join(self.destination_directory_path, c4z_name))
 
             # FIND THE TEMPORARY DIRECTORY CONTAINING THE NEEDED DRIVER.XML AND DRIVER.LUA.SQUISHED.
-            source_driver_temporary_directory_path = None
+            source_temporary_directory_path = None
             root_temporary_directory_path = tempfile.gettempdir()
-            temporary_directories = next(os.walk(root_temporary_directory_path))[1]
-            for temporary_directory_name in temporary_directories:
-                is_squished_lua_directory: bool = str(temporary_directory_name).startswith("Squished_Lua_")
+            SUBDIRECTORY_NAMES_INDEX = 1
+            temporary_subdirectorie_names = next(os.walk(root_temporary_directory_path))[SUBDIRECTORY_NAMES_INDEX]
+            for temporary_subdirectory_name in temporary_subdirectorie_names:
+                # CHECK IF THE TEMPORARY DIRECTORY IS THE ONE CREATED FOR SQUISHING LUA.
+                is_squished_lua_directory: bool = temporary_subdirectory_name.startswith("Squished_Lua_")
                 if is_squished_lua_directory:
-                    source_driver_temporary_directory_path  = os.path.join(root_temporary_directory_path, temporary_directory_name)
+                    source_temporary_directory_path  = os.path.join(root_temporary_directory_path, temporary_subdirectory_name)
 
             # If source path wasn't found, then the temp directory was not created because encryption was detected in the driver.xml (see build_c4z.py).
-            source_driver_temporary_directory_found: bool = source_driver_temporary_directory_path is not None
-            if not source_driver_temporary_directory_found:
+            source_temporary_directory_found: bool = source_temporary_directory_path is not None
+            if not source_temporary_directory_found:
                 raise Exception("Encryption was detected in the driver.xml.  When building drivers of type 'c4i', encryption must be disabled.  Please remove the attribute and value of encryption='2' from the <script> element in the driver.xml")
 
             # UPDATE THE DRIVER.XML.
@@ -531,17 +536,19 @@ class DriverPackager(object):
             self.UpdateDriverXml(driver_xml_filepath)
 
             # REMOVE ANY <script> SECTIONS IN THE DRIVER.XML.
-            xmlTree = etree.parse(driver_xml_filepath)
-            xmlRootDriver = xmlTree.getroot()
-            script = xmlRootDriver.findall('./config/script')
-            script_element_exists: bool = script is not None
-            if script_element_exists:
-                config = xmlRootDriver.find('config')
-                for script in config.findall('script'):
-                    config.remove(script)
+            driver_xml_tree = etree.parse(driver_xml_filepath)
+            driver_xml_root_element = driver_xml_tree.getroot()
+            script_xml_element = driver_xml_root_element.findall('./config/script')
+            script_xml_element_exists: bool = script_xml_element is not None
+            if script_xml_element_exists:
+                # REMOVE ALL SCRIPT ELEMENTS UNDER THE CONFIG ELEMENT.
+                config_xml_element = driver_xml_root_element.find('config')
+                for script_xml_element in config_xml_element.findall('script'):
+                    config_xml_element.remove(script_xml_element)
 
-            temporary_driver_2_xml_filepath: str = os.path.join(source_driver_temporary_directory_path, "driver2.xml")
-            xmlTree.write(temporary_driver_2_xml_filepath)
+            # WRITE THE DRIVER XML WITHOUT THE <script> SECTION TO A NEW FILE.
+            driver_2_xml_filepath: str = os.path.join(source_temporary_directory_path, "driver2.xml")
+            driver_xml_tree.write(driver_2_xml_filepath)
 
             # GET THE SQUISHED LUA FILE CONTENTS.
             squished_lua_driver_filepath: str = os.path.join(self.source_directory_path, "driver.lua.squished")
@@ -551,32 +558,35 @@ class DriverPackager(object):
 
             # ADD THE SQUISHED LUA TO THE <script> SECTION OF THE DRIVER.
             # It must be wrapped in <CDATA> tags.
-            document = etree.parse(temporary_driver_2_xml_filepath)
-            parent = document.find('config')
-            child = etree.SubElement(parent, 'script')
-            child.text = etree.CDATA(''.join(squished_lua_driver_file_lines))
+            driver_2_xml_tree = etree.parse(driver_2_xml_filepath)
+            driver_2_config_xml_element = driver_2_xml_tree.find('config')
+            driver_2_script_element = etree.SubElement(driver_2_config_xml_element, 'script')
+            driver_2_script_element.text = etree.CDATA(''.join(squished_lua_driver_file_lines))
 
             # WRITE OUT THE FINAL C4I DOCUMENT.
-            destination_c4i_filepath: str = os.path.join(self.destination_directory_path, c4zName)
-            document.write(destination_c4i_filepath, pretty_print=True)
+            destination_c4i_filepath: str = os.path.join(self.destination_directory_path, c4z_name)
+            driver_2_xml_tree.write(destination_c4i_filepath, pretty_print=True)
 
         else:
             # UNZIP THE C4Z DRIVER IN THE DESTINATION DIRECTORY IF ENABLED.
             if self.unzip:
-                driver_destination_filepath = os.path.join(self.destination_directory_path, c4zName)
-                driver_destination_filepath_without_extension = os.path.splitext(driver_destination_filepath)[0]
+                # DETERMINE THE DIRECTORY TO EXTRACT THE DRIVER TO.
+                # The driver will be extracted to a subdirectory with the same base name as the driver.
+                driver_destination_filepath: str = os.path.join(self.destination_directory_path, c4z_name)
+                PATH_BEFORE_FILE_EXTENSION_INDEX: str = 0
+                extracted_driver_destination_folder_path: str = os.path.splitext(driver_destination_filepath)[PATH_BEFORE_FILE_EXTENSION_INDEX]
 
                 # ENSURE A CLEAN DIRECTORY EXISTS FOR EXTRACTING THE DRIVER.
-                driver_extraction_directory_exists: bool = os.path.exists(driver_destination_filepath_without_extension)
+                driver_extraction_directory_exists: bool = os.path.exists(extracted_driver_destination_folder_path)
                 if driver_extraction_directory_exists:
-                    shutil.rmtree(driver_destination_filepath_without_extension)
+                    shutil.rmtree(extracted_driver_destination_folder_path)
                     
                 # EXTRACT THE DRIVER TO THE DESTINATION DIRECTORY.
                 with zipfile.ZipFile(driver_destination_filepath, "r") as driver_zip_file:
-                    driver_zip_file.extractall(driver_destination_filepath_without_extension)
+                    driver_zip_file.extractall(extracted_driver_destination_folder_path)
 
         # EXECUTE ANY POSTPACKAGING COMMANDS.
-        postpackage_command_xml_elements = xmlRoot.find('PostpackageCommands')
+        postpackage_command_xml_elements = xml_root_element.find('PostpackageCommands')
         postpackage_commands_exist: bool = postpackage_command_xml_elements is not None
         if postpackage_commands_exist:
             # EXECUTE EACH POSTPACKAGING COMMAND.
@@ -646,7 +656,7 @@ class DriverPackager(object):
 
     ## Builds a driver according to how this packager was configured.
     ## \return  A return code for driver packaging (0 = success, other values = failure).
-    def DriverPackager(self) -> int:
+    def Run(self) -> int:
         # BUILD THE DRIVER FROM A MANIFEST IF ONE WAS SPECIFIED.
         manifest_explicitly_specified: bool = self.manifest_xml_filename is not None
         if manifest_explicitly_specified:
@@ -715,7 +725,6 @@ class DriverPackager(object):
         SUCCESS_RETURN_CODE: int = 0
         return SUCCESS_RETURN_CODE
 
-
     ## Logs a line to the console (if verbose output is enabled).
     ## \param[in]   line - The line to log.  Typically expected to be a string
     #       but may be any object (like an exception) convertible to a string.
@@ -731,7 +740,7 @@ class DriverPackager(object):
 
 ## Creates a driver packager based on command line arguments.
 ## \return  An appropriately configured driver packager.
-def CreateDriverPackagerFromCommandLineArguments() -> DriverPackager:#
+def CreateDriverPackagerFromCommandLineArguments() -> DriverPackager:
     # PARSE COMMAND LINE ARGUMENTS.
     command_line_argument_parser = argparse.ArgumentParser()
     command_line_argument_parser.add_argument("-v", "--verbose", action="store_true",
@@ -761,5 +770,5 @@ def CreateDriverPackagerFromCommandLineArguments() -> DriverPackager:#
 # RUN THE DRIVER PACKAGER IF THIS FILE IS BEING RUN DIRECTLY.
 if __name__ == "__main__":
     driver_packager: DriverPackager = CreateDriverPackagerFromCommandLineArguments()
-    return_code: int = driver_packager.DriverPackager()
+    return_code: int = driver_packager.Run()
     sys.exit(return_code)

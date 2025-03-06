@@ -557,19 +557,20 @@ function oauth:GetTokenResponse (errorMessage, responseCode, tHeaders, data, con
 
         -- STORE THE TOKEN AS ENCRYPTED IF POSSIBLE.
         local persistStoreKey = C4:Hash ('SHA256', C4:GetDeviceID () .. self.API_CLIENT_ID, SHA_ENC_DEFAULTS)
-
         local encryptionKey = C4:GetDeviceID () .. self.API_SECRET .. self.API_CLIENT_ID
+        -- Encryption has the potential to fail.
         local encryptedToken, errString = SaltedEncrypt (encryptionKey, self.REFRESH_TOKEN)
         if (errString) then
             self.metrics:SetString ('Error_EncryptRefreshToken', errString)
         end
-
+        -- The encrypted token should be persistently stored.
         PersistSetValue (persistStoreKey, encryptedToken)
 
         -- UPDATE THE SCOPE BASED ON THE RESPONSE DATA.
         self.SCOPE = data.scope or self.SCOPE
 
         -- UPDATE THE EXPIRATION TIME BASED ON THE RESPONSE DATA.
+        -- Any previous value should be preserved if an updated value isn't available.
         self.EXPIRES_IN = tonumber(data.expires_in) or self.EXPIRES_IN or self.DEFAULT_EXPIRES_IN
 
         -- SET A TIMER TO REFRESH EXPIRING TOKENS IF APPLICABLE.

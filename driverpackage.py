@@ -330,14 +330,14 @@ class DriverPackager(object):
             # A type is required.
             item_type = item_xml_element.attrib.get('type')
             item_type_exists: bool = item_type is not None
-            if item_type_exists:
+            if not item_type_exists:
                 self.CleanupTemporaryLuaFile(root_directory_path)
                 raise Exception("DriverPackager: Invalid XML: Missing tag 'Item' subtag 'type'")
 
             # A name is required.
             item_name = item_xml_element.attrib.get('name')
             item_name_exists: bool = item_name is not None
-            if item_name_exists:
+            if not item_name_exists:
                 self.CleanupTemporaryLuaFile(root_directory_path)
                 raise Exception("DriverPackager: Invalid XML: Missing tag 'Item' subtag 'name'")
 
